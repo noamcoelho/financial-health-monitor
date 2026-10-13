@@ -1,0 +1,37 @@
+# Empresas monitoradas pelo pipeline.
+#
+# Para ADICIONAR uma empresa: copie um bloco e ajuste os campos.
+# Para PAUSAR uma empresa sem apagar o histórico: use active: false.
+#
+# Campos:
+#   ticker   (obrigatório) código no Yahoo Finance. Ações da B3 usam o sufixo .SA
+#   name     (obrigatório) nome para exibição
+#   sector   (opcional)    setor de atuação
+#   currency (opcional)    moeda de negociação, padrão BRL
+#   active   (opcional)    true/false, padrão true
+
+companies:
+  - ticker: PETR4.SA
+    name: Petrobras
+    sector: Petróleo, Gás e Biocombustíveis
+    active: true
+
+  - ticker: VALE3.SA
+    name: Vale
+    sector: Mineração
+    active: true
+
+  - ticker: ITUB4.SA
+    name: Itaú Unibanco
+    sector: Financeiro
+    active: true
+
+  - ticker: ABEV3.SA
+    name: Ambev
+    sector: Bebidas
+    active: true
+
+  - ticker: BBAS3.SA
+    name: Banco do Brasil
+    sector: Financeiro
+    active: true
