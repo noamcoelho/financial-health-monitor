@@ -16,10 +16,14 @@ dependencies = [
     "tzdata>=2024.1",
     "SQLAlchemy>=1.4.49,<3",
     "psycopg2-binary>=2.9",
+    "pyarrow>=14",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Instale com o arquivo de constraints oficial da versão, por exemplo:
+# pip install -e ".[airflow]" --constraint https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt
+airflow = ["apache-airflow>=3.0,<4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
