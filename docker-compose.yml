@@ -1,0 +1,171 @@
+# =====================================================================
+# Monitor de Saúde Financeira — ambiente local com Docker Compose
+#
+#   postgres-data          banco do projeto (schema em sql/schemas.sql)
+#   postgres-airflow       banco de metadados do Airflow
+#   airflow-init           migra o banco do Airflow e cria o usuário admin
+#   airflow-apiserver      interface web e API  -> http://localhost:8080
+#   airflow-scheduler      agenda e executa as tarefas (LocalExecutor)
+#   airflow-dag-processor  lê e processa os arquivos da pasta dags/
+#
+# Uso:
+#     docker compose build
+#     docker compose up -d
+#
+# Todas as variáveis vêm do .env (veja o .env.example).
+# =====================================================================
+
+x-airflow-common: &airflow-common
+  # A imagem é construída só pelo airflow-init (veja abaixo); os demais
+  # serviços reutilizam a mesma tag.
+  image: financial-health-monitor/airflow:3.3.2
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-common-env
+    # --- Airflow ---
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?defina AIRFLOW_FERNET_KEY no .env}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?defina AIRFLOW_JWT_SECRET no .env}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?defina AIRFLOW_API_SECRET_KEY no .env}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@postgres-airflow:5432/airflow
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # --- Projeto: dentro da rede do Compose o banco é o serviço postgres-data ---
+    POSTGRES_HOST: postgres-data
+    POSTGRES_PORT: 5432
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    MARKET_TIMEZONE: ${MARKET_TIMEZONE:-America/Sao_Paulo}
+    EXTRACTION_LOOKBACK_DAYS: ${EXTRACTION_LOOKBACK_DAYS:-400}
+    API_TIMEOUT_SECONDS: ${API_TIMEOUT_SECONDS:-20}
+    API_MAX_RETRIES: ${API_MAX_RETRIES:-3}
+    API_RETRY_BACKOFF_SECONDS: ${API_RETRY_BACKOFF_SECONDS:-2}
+    API_PAUSE_BETWEEN_TICKERS: ${API_PAUSE_BETWEEN_TICKERS:-1}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    # tickers.yaml editável sem rebuild; o staging em Parquet fica visível no host
+    - ./config:/opt/airflow/project/config
+    - ./data:/opt/airflow/project/data
+  depends_on: &airflow-common-depends-on
+    postgres-airflow:
+      condition: service_healthy
+    postgres-data:
+      condition: service_healthy
+
+services:
+  postgres-data:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB no .env}
+      POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER no .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - postgres-data-volume:/var/lib/postgresql/data
+      # Executado só na primeira inicialização (volume vazio)
+      - ./sql/schemas.sql:/docker-entrypoint-initdb.d/01_schemas.sql:ro
+    ports:
+      # Permite rodar scripts/run_pipeline.py no host com POSTGRES_HOST=localhost
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres-airflow:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: ${AIRFLOW_DB_USER:?defina AIRFLOW_DB_USER no .env}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?defina AIRFLOW_DB_PASSWORD no .env}
+    volumes:
+      - postgres-airflow-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    # Um único build evita que vários serviços exportem a mesma tag em paralelo
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    # Roda como root só para preparar as pastas montadas; o /entrypoint
+    # executa o comando do Airflow com o usuário AIRFLOW_UID.
+    user: "0:0"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/project/data
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/project/data
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME:?defina AIRFLOW_ADMIN_USERNAME no .env}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?defina AIRFLOW_ADMIN_PASSWORD no .env}
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data-volume:
+  postgres-airflow-volume:

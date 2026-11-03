@@ -1,0 +1,14 @@
+# Dependências do projeto instaladas na imagem do Airflow.
+#
+# As versões das bibliotecas que o Airflow também usa (pandas, SQLAlchemy,
+# psycopg2...) são fixadas pelo arquivo de constraints oficial do Airflow,
+# aplicado no Dockerfile. Isso garante compatibilidade com o Airflow 3.3.2.
+pandas
+numpy
+SQLAlchemy
+psycopg2-binary
+pyarrow
+yfinance==1.7.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+tzdata
